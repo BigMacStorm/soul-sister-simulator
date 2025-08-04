@@ -82,7 +82,7 @@ CARD_DATABASE = {
         triggers=[{"event": "life_gained", "action": add_counter_action, "params": {"counter_type": "+1/+1", "amount": 1}}]
     ),
     "Amalia Benavides Aguirre": lambda: Card(
-        "Amalia Benavides Aguirre", "Creature", cost={"W": 1, "B": 1, "C": 0}, power=1, toughness=3,
+        "Amalia Benavides Aguirre", "Creature", cost={"W": 1, "B": 1, "C": 0}, power=2, toughness=2,
         triggers=[{"event": "life_gained", "action": explore_action, "params": {}}]
     ),
     "Archangel of Thune": lambda: Card(

@@ -5,6 +5,7 @@ from .cards_def import get_card
 from .game_state import GameState
 from .deck import Deck
 from .config import NUM_SIMULATIONS
+from .opponent import OpponentSimulator
 
 LOG = []
 VERBOSE = True
@@ -61,16 +62,23 @@ def run_single_simulation(num_turns=10, verbose=True):
     commander = get_card("Amalia Benavides Aguirre")
     state = GameState(deck, commander=commander, verbose=verbose)
     state.new_game()
+    
+    # Initialize opponent simulator
+    opponent = OpponentSimulator()
+    
     if verbose:
         log_board_state(state, note="Initial State")
+        log_action(f"Opponents: {opponent.num_opponents} opponents")
+    
     per_turn_stats = []
     for turn in range(1, num_turns + 1):
-        log_action(f"\n=== Turn {turn} ===")
+        # Player's turn
+        log_action(f"\n=== Turn {turn} (Player) ===")
         state.start_turn()
-        drawn = state.deck.draw(1)
+        drawn = state.draw_card(1)
         if drawn:
-            drawn_card = drawn[0]
-            state.hand.add(drawn_card)
+            # Get the last card added to hand for logging
+            drawn_card = state.hand.cards[-1]
             log_action(f"Drew a card at start of turn: {drawn_card.name} ({drawn_card.card_type})")
         else:
             log_action("No card drawn (deck empty)")
@@ -116,6 +124,19 @@ def run_single_simulation(num_turns=10, verbose=True):
             state.hand.remove(discard)
             state.graveyard.append(discard)
             log_action(f"Discarded: {discard}")
+        
+        # Each opponent takes their turn in order
+        for opponent_id in range(opponent.num_opponents):
+            log_action(f"\n=== Turn {turn} (Opponent {opponent_id}) ===")
+            opponent_results = opponent.take_single_opponent_turn(opponent_id, state, turn)
+            if verbose and opponent_results["actions_executed"]:
+                log_action(f"Opponent {opponent_id} actions:")
+                for action in opponent_results["actions_executed"]:
+                    log_action(f"  - {action['action']}: {action}")
+            if verbose:
+                opponent_state = opponent.get_opponent_state(opponent_id)
+                log_action(f"Opponent {opponent_id}: {opponent_state['creatures']} creatures")
+        
         # Record stats for this turn
         creatures = [c for c in state.battlefield.cards if c.card_type == "Creature"]
         num_creatures = len(creatures)
@@ -125,6 +146,9 @@ def run_single_simulation(num_turns=10, verbose=True):
         hand_size = len(state.hand.cards)
         graveyard_size = len(state.graveyard)
         graveyard_creatures = sum(1 for c in state.graveyard if c.card_type == "Creature")
+        
+        # Add opponent stats
+        total_opponent_creatures = opponent.get_total_creatures()
         per_turn_stats.append({
             'life': state.life,
             'num_creatures': num_creatures,
@@ -134,9 +158,19 @@ def run_single_simulation(num_turns=10, verbose=True):
             'hand_size': hand_size,
             'graveyard_size': graveyard_size,
             'graveyard_creatures': graveyard_creatures,
+            'opponent_creatures': total_opponent_creatures,
+            'opponent_actions': len(opponent_results["actions_executed"]),
+            'cards_drawn': state.cards_drawn_this_turn,
         })
+    
     if verbose:
         log_board_state(state, note="Final State")
+        final_opponent_states = opponent.get_opponent_states()
+        total_creatures = opponent.get_total_creatures()
+        log_action(f"Final opponent states: {total_creatures} total creatures")
+        for opp_state in final_opponent_states:
+            log_action(f"  Opponent {opp_state['opponent_id']}: {opp_state['creatures']} creatures")
+    
     return per_turn_stats
 
 def simulate_turns(num_turns=10, verbose=True):
@@ -161,6 +195,9 @@ def run_many_simulations(num_turns=10, num_simulations=None):
             'hand_size': [],
             'graveyard_size': [],
             'graveyard_creatures': [],
+            'opponent_creatures': [],
+            'opponent_actions': [],
+            'cards_drawn': [],
         })
     for sim in range(num_simulations):
         stats = run_single_simulation(num_turns=num_turns, verbose=False)
@@ -173,10 +210,14 @@ def run_many_simulations(num_turns=10, num_simulations=None):
             stats_per_turn[turn]['hand_size'].append(stat['hand_size'])
             stats_per_turn[turn]['graveyard_size'].append(stat['graveyard_size'])
             stats_per_turn[turn]['graveyard_creatures'].append(stat['graveyard_creatures'])
-    # Print summary table
-    print("\n=== Simulation Averages ({} games) ===".format(num_simulations))
-    print("Turn | Life | Creatures | Total P/T | Damage to Enemies | Hand | Graveyard | GY Creatures")
-    print("-----|------|-----------|-----------|-------------------|------|-----------|--------------")
+            stats_per_turn[turn]['opponent_creatures'].append(stat['opponent_creatures'])
+            stats_per_turn[turn]['opponent_actions'].append(stat['opponent_actions'])
+            stats_per_turn[turn]['cards_drawn'].append(stat['cards_drawn'])
+    
+    # Print summary table for player
+    print("\n=== Player Simulation Averages ({} games) ===".format(num_simulations))
+    print("Turn | Life | Creatures | Total P/T | Damage to Enemies | Hand | Graveyard | GY Creatures | Cards Drawn")
+    print("-----|------|-----------|-----------|-------------------|------|-----------|--------------|------------")
     for turn, stats in enumerate(stats_per_turn, 1):
         avg_life = sum(stats['life']) / len(stats['life'])
         avg_creatures = sum(stats['num_creatures']) / len(stats['num_creatures'])
@@ -186,14 +227,31 @@ def run_many_simulations(num_turns=10, num_simulations=None):
         avg_hand = sum(stats['hand_size']) / len(stats['hand_size'])
         avg_gy = sum(stats['graveyard_size']) / len(stats['graveyard_size'])
         avg_gy_creatures = sum(stats['graveyard_creatures']) / len(stats['graveyard_creatures'])
-        print(f"{turn:>4} | {avg_life:>4.1f} | {avg_creatures:>9.2f} | {avg_power:.2f}/{avg_toughness:.2f} | {avg_damage:>17.2f} | {avg_hand:>4.2f} | {avg_gy:>9.2f} | {avg_gy_creatures:>12.2f}")
+        avg_cards_drawn = sum(stats['cards_drawn']) / len(stats['cards_drawn'])
+        print(f"{turn:>4} | {avg_life:>4.1f} | {avg_creatures:>9.2f} | {avg_power:.2f}/{avg_toughness:.2f} | {avg_damage:>17.2f} | {avg_hand:>4.2f} | {avg_gy:>9.2f} | {avg_gy_creatures:>12.2f} | {avg_cards_drawn:>10.2f}")
+    
+    # Print summary table for opponent
+    print("\n=== Opponent Simulation Averages ({} games) ===".format(num_simulations))
+    print("Turn | Total Creatures | Actions")
+    print("-----|----------------|---------")
+    for turn, stats in enumerate(stats_per_turn, 1):
+        avg_creatures = sum(stats['opponent_creatures']) / len(stats['opponent_creatures'])
+        avg_actions = sum(stats['opponent_actions']) / len(stats['opponent_actions'])
+        print(f"{turn:>4} | {avg_creatures:>14.2f} | {avg_actions:>7.2f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate a number of turns of Soul Sister deck.")
     parser.add_argument('--turns', type=int, default=10, help='Number of turns to simulate (default: 10)')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose simulation output')
     parser.add_argument('--many', action='store_true', help='Run many simulations and print averages')
+    parser.add_argument('--opponents', type=int, help='Number of opponents to simulate (overrides config)')
     args = parser.parse_args()
+    
+    # Override config if opponents flag is set
+    if args.opponents is not None:
+        from .config import OPPONENT_CONFIG
+        OPPONENT_CONFIG['num_opponents'] = args.opponents
+    
     if args.many:
         run_many_simulations(num_turns=args.turns)
     else:

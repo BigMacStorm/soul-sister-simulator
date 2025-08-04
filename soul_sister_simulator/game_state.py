@@ -28,6 +28,7 @@ class GameState:
         self.properties = {}
         # Verbose flag for logging
         self.verbose = verbose
+        self.cards_drawn_this_turn = 0
 
     def new_game(self):
         self.deck.reset()
@@ -42,6 +43,7 @@ class GameState:
         self.command_zone = self.commander is not None
         self.commander_cast_count = 0
         self.stack = []
+        self.cards_drawn_this_turn = 0
         self.hand.add_many(self.deck.draw(7))
 
     def untap_all(self):
@@ -61,9 +63,11 @@ class GameState:
         self.turn += 1
         self.lurrus_cast_used = False
         self.nonland_cards_played_this_turn = 0
+        self.cards_drawn_this_turn = 0
 
     def draw_card(self, n=1):
         self.hand.add_many(self.deck.draw(n))
+        self.cards_drawn_this_turn += n
 
     def play_land(self, card: Card):
         if self.lands_played_this_turn >= 1:
@@ -193,9 +197,21 @@ class GameState:
 
     def process_stack(self):
         while self.stack:
-            if len(self.stack) > 200:
-                print(self.stack)
+            if len(self.stack) > 30:
+                print("\n=== DEBUG: Stack too long! ===")
+                print(f"Stack length: {len(self.stack)}")
+                print("Top stack item:", self.stack)
+                print("Current board state:")
+                print(f"Life: {self.life}")
+                print(f"Hand ({len(self.hand.cards)}): {[c.name for c in self.hand.cards]}")
+                creatures = [c for c in self.battlefield.cards if c.card_type == 'Creature']
+                print(f"Creatures on board ({len(creatures)}): {[f'{c.name} ({c.power}/{c.toughness})' for c in creatures]}")
+                lands = [c for c in self.battlefield.cards if c.card_type == 'Land']
+                print(f"Lands on board ({len(lands)}): {[c.name for c in lands]}")
+                print(f"Graveyard ({len(self.graveyard)}): {[c.name for c in self.graveyard]}")
+                input("Paused for debug. Press Enter to clear stack and continue...")
                 self.stack.clear()
+                print("Stack cleared.\n")
                 break
             item = self.stack.pop()
             action = item['action']
@@ -209,6 +225,8 @@ class GameState:
             raise Exception("Cannot pay cost to play this card.")
         self.tap_lands_for_cost(card)
         self.hand.remove(card)
+        # Store existing battlefield cards before adding the new card
+        existing_cards = list(self.battlefield.cards)
         self.battlefield.add(card)
         if card.card_type != 'Land':
             if not hasattr(self, 'nonland_cards_played_this_turn'):
@@ -218,33 +236,33 @@ class GameState:
             for c in self.battlefield.cards:
                 for trig in c.get_triggers('my_plays_card'):
                     self.push_trigger(trig['action'], c, 'my_plays_card', trig.get('params', {}))
-        # Stack triggers: my_creature_etb for all your permanents (including the entering creature)
+        # Stack triggers: my_creature_etb for all your permanents (excluding the entering creature)
         if card.card_type == 'Creature':
-            for c in self.battlefield.cards:
+            for c in existing_cards:  # Only trigger existing cards, not the entering creature
                 for trig in c.get_triggers('my_creature_etb'):
                     self.push_trigger(trig['action'], c, 'my_creature_etb', trig.get('params', {}))
         # Stack triggers: any_creature_etb for all other cards on battlefield
         if card.card_type == 'Creature':
-            for c in self.battlefield.cards:
-                if c is not card:
-                    for trig in c.get_triggers('any_creature_etb'):
-                        params = dict(trig.get('params', {}))
-                        params['entering_card'] = card
-                        self.push_trigger(trig['action'], c, 'any_creature_etb', params)
+            for c in existing_cards:  # Only trigger existing cards, not the entering creature
+                for trig in c.get_triggers('any_creature_etb'):
+                    params = dict(trig.get('params', {}))
+                    params['entering_card'] = card
+                    self.push_trigger(trig['action'], c, 'any_creature_etb', params)
         self.process_stack()
 
-    def gain_life(self, amount: int):
+    def gain_life(self, amount: int, source_card: Optional[Card] = None):
         self.life += amount
         # Track life gained this turn for effects like Ocelot Pride
         if not hasattr(self, 'life_gained_this_turn'):
             self.life_gained_this_turn = 0
         self.life_gained_this_turn += amount
-        # Stack 'life_gained' triggers for all cards on battlefield (including the card that caused the gain)
+        # Stack 'life_gained' triggers for all cards on battlefield (excluding the card that caused the gain)
         for c in self.battlefield.cards:
-            for trig in c.get_triggers('life_gained'):
-                params = dict(trig.get('params', {}))
-                params['amount'] = amount
-                self.push_trigger(trig['action'], c, 'life_gained', params)
+            if c is not source_card:  # Don't trigger the card that caused the life gain
+                for trig in c.get_triggers('life_gained'):
+                    params = dict(trig.get('params', {}))
+                    params['amount'] = amount
+                    self.push_trigger(trig['action'], c, 'life_gained', params)
         self.process_stack()
 
     def can_cast_commander(self) -> bool:
@@ -260,6 +278,8 @@ class GameState:
         if not self.can_pay_cost(self.commander, extra_cost=extra_cost):
             raise Exception("Cannot pay cost to cast commander.")
         self.tap_lands_for_cost(self.commander, extra_cost=extra_cost)
+        # Store existing battlefield cards before adding the commander
+        existing_cards = list(self.battlefield.cards)
         self.battlefield.add(self.commander)
         self.command_zone = False
         self.commander_cast_count += 1
@@ -267,19 +287,18 @@ class GameState:
             if not hasattr(self, 'nonland_cards_played_this_turn'):
                 self.nonland_cards_played_this_turn = 0
             self.nonland_cards_played_this_turn += 1
-        # Stack triggers: my_creature_etb for all your permanents (including the commander)
+        # Stack triggers: my_creature_etb for all your permanents (excluding the commander)
         if self.commander.card_type == 'Creature':
-            for c in self.battlefield.cards:
+            for c in existing_cards:  # Only trigger existing cards, not the commander
                 for trig in c.get_triggers('my_creature_etb'):
                     self.push_trigger(trig['action'], c, 'my_creature_etb', trig.get('params', {}))
         # Stack triggers: any_creature_etb for all other cards on battlefield
         if self.commander.card_type == 'Creature':
-            for c in self.battlefield.cards:
-                if c is not self.commander:
-                    for trig in c.get_triggers('any_creature_etb'):
-                        params = dict(trig.get('params', {}))
-                        params['entering_card'] = self.commander
-                        self.push_trigger(trig['action'], c, 'any_creature_etb', params)
+            for c in existing_cards:  # Only trigger existing cards, not the commander
+                for trig in c.get_triggers('any_creature_etb'):
+                    params = dict(trig.get('params', {}))
+                    params['entering_card'] = self.commander
+                    self.push_trigger(trig['action'], c, 'any_creature_etb', params)
         self.process_stack()
 
     def commander_destroyed(self):
@@ -348,19 +367,20 @@ class GameState:
             raise Exception("Cannot pay cost to cast this card.")
         self.tap_lands_for_cost(card)
         self.graveyard.remove(card)
+        # Store existing battlefield cards before adding the new card
+        existing_cards = list(self.battlefield.cards)
         self.battlefield.add(card)
         self.lurrus_cast_used = True
         if card.card_type != 'Land':
             if not hasattr(self, 'nonland_cards_played_this_turn'):
                 self.nonland_cards_played_this_turn = 0
             self.nonland_cards_played_this_turn += 1
-        for c in self.battlefield.cards:
+        for c in existing_cards:  # Only trigger existing cards, not the entering creature
             for trig in c.get_triggers('my_creature_etb'):
                 self.push_trigger(trig['action'], c, 'my_creature_etb', trig.get('params', {}))
-        for c in self.battlefield.cards:
-            if c is not card:
-                for trig in c.get_triggers('any_creature_etb'):
-                    params = dict(trig.get('params', {}))
-                    params['entering_card'] = card
-                    self.push_trigger(trig['action'], c, 'any_creature_etb', params)
+        for c in existing_cards:  # Only trigger existing cards, not the entering creature
+            for trig in c.get_triggers('any_creature_etb'):
+                params = dict(trig.get('params', {}))
+                params['entering_card'] = card
+                self.push_trigger(trig['action'], c, 'any_creature_etb', params)
         self.process_stack() 

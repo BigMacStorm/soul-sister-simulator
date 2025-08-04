@@ -2,7 +2,7 @@ import random
 from .config import ESPER_PAY_RATE, CHANCE_NON_BASIC_LAND
 
 def gain_life_action(card, game_state, amount=1, **kwargs):
-    game_state.gain_life(amount)
+    game_state.gain_life(amount, source_card=card)
 
 def explore_action(card, game_state, **kwargs):
     # Look at the top card of the deck
@@ -13,14 +13,15 @@ def explore_action(card, game_state, **kwargs):
             # If it's a land, put it into hand
             game_state.hand.add(top_card)
         else:
-            # If it's not a land, put it into graveyard and increase commander's power/toughness
+            # If it's not a land, put it into graveyard and increase the triggering card's power/toughness
             game_state.graveyard.append(top_card)
-            # Increase commander's power/toughness by 1 (simplified as a property)
-            if game_state.commander and game_state.commander in game_state.battlefield.cards:
-                if game_state.commander.power is not None:
-                    game_state.commander.power += 1
-                if game_state.commander.toughness is not None:
-                    game_state.commander.toughness += 1
+            # The card parameter should be the actual card instance from the battlefield
+            # Just verify it's on the battlefield and increase its stats
+            if card in game_state.battlefield.cards:
+                if card.power is not None:
+                    card.power += 1
+                if card.toughness is not None:
+                    card.toughness += 1
 
 def draw_card_action(card, game_state, amount=1, **kwargs):
     game_state.draw_card(amount)
@@ -62,16 +63,17 @@ def add_counter_to_all_creatures_action(card, game_state, counter_type="+1/+1", 
 def create_token_action(card, game_state, name="token", power=1, toughness=1, **kwargs):
     from .card import Card
     token = Card(name, "Creature", power=power, toughness=toughness)
+    # Store existing battlefield cards before adding the token
+    existing_cards = list(game_state.battlefield.cards)
     game_state.battlefield.add(token)
     # Trigger ETB for the token
     for trig in token.get_triggers('my_creature_etb'):
         game_state.push_trigger(trig['action'], token, 'my_creature_etb', trig.get('params', {}))
-    for c in game_state.battlefield.cards:
-        if c is not token:
-            for trig in c.get_triggers('any_creature_etb'):
-                params = dict(trig.get('params', {}))
-                params['entering_card'] = token
-                game_state.push_trigger(trig['action'], c, 'any_creature_etb', params)
+    for c in existing_cards:  # Only trigger existing cards, not the token
+        for trig in c.get_triggers('any_creature_etb'):
+            params = dict(trig.get('params', {}))
+            params['entering_card'] = token
+            game_state.push_trigger(trig['action'], c, 'any_creature_etb', params)
 
 def maybe_create_token_action(card, game_state, **kwargs):
     # 15% chance to create a 1/1 'token' creature
@@ -97,16 +99,17 @@ def elenda_death_token_action(card, game_state, **kwargs):
     from .card import Card
     for _ in range(num_tokens):
         token = Card("Vampire", "Creature", power=1, toughness=1)
+        # Store existing battlefield cards before adding the token
+        existing_cards = list(game_state.battlefield.cards)
         game_state.battlefield.add(token)
         # Trigger ETB for the token
         for trig in token.get_triggers('my_creature_etb'):
             game_state.push_trigger(trig['action'], token, 'my_creature_etb', trig.get('params', {}))
-        for c in game_state.battlefield.cards:
-            if c is not token:
-                for trig in c.get_triggers('any_creature_etb'):
-                    params = dict(trig.get('params', {}))
-                    params['entering_card'] = token
-                    game_state.push_trigger(trig['action'], c, 'any_creature_etb', params)
+        for c in existing_cards:  # Only trigger existing cards, not the token
+            for trig in c.get_triggers('any_creature_etb'):
+                params = dict(trig.get('params', {}))
+                params['entering_card'] = token
+                game_state.push_trigger(trig['action'], c, 'any_creature_etb', params)
 
 def esper_sentinel_draw_action(card, game_state, esper_pay_rate=None, **kwargs):
     if esper_pay_rate is None:
